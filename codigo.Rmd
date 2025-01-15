@@ -1,0 +1,355 @@
+---
+title: "lab3_analisis_de_datos"
+output: html_document
+date: "2024-06-07"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(mice)
+library(tidyr)
+library(arules)
+library(arulesViz)
+library(caret)
+library(C50)
+```
+
+## Lectura de archivos
+
+```{r lectura}
+FILENAME = 'data.csv'
+dataset = read.csv(FILENAME, row.names = 1, colClasses = "integer")
+cols = colnames(dataset)
+na_count = summarise_all(dataset, ~sum(is.na(.)))
+
+str(dataset)
+print(dataset)
+print(na_count)
+```
+
+
+## Limpieaza de datos
+
+# Imputacion
+
+```{r imputar_schooling}
+# Hacer una copia del dataset original
+cleaned_dataset = dataset
+
+# Imputar la columna 'Schooling' usando la mediana
+cleaned_dataset$Schooling = with(cleaned_dataset, ifelse(is.na(Schooling), median(Schooling, na.rm = TRUE), Schooling))
+
+# Convertir 'Schooling' a entero
+cleaned_dataset$Schooling = as.integer(cleaned_dataset$Schooling)
+
+# Mostrar información del dataset
+na_count = summarise_all(cleaned_dataset, ~sum(is.na(.)))
+
+print(na_count)
+str(cleaned_dataset)
+```
+
+
+
+```{r imputar_initial_symptom}
+# Definir la función para calcular la moda (valor más frecuente)
+calculate_mode = function(x) {
+  freq = table(x)
+  as.numeric(names(freq)[which.max(freq)])
+}
+
+# Imputar la columna 'Initial_Symptom' usando la moda
+mode_value = calculate_mode(cleaned_dataset$Initial_Symptom[!is.na(cleaned_dataset$Initial_Symptom)])
+cleaned_dataset$Initial_Symptom[is.na(cleaned_dataset$Initial_Symptom)] = mode_value
+
+# Convertir 'Initial_Symptom' a entero
+cleaned_dataset$Initial_Symptom = as.integer(cleaned_dataset$Initial_Symptom)
+
+# Contar y mostrar la cantidad de valores nulos en cada columna
+na_count = summarise_all(cleaned_dataset, ~sum(is.na(.)))
+
+# Mostrar información de nulos y un resumen del dataset
+print(na_count)
+str(cleaned_dataset)
+```
+
+
+
+```{r limpiar_edss}
+cleaned_dataset$Initial_EDSS = NULL
+cleaned_dataset$Final_EDSS = NULL
+str(cleaned_dataset)
+```
+
+
+
+## Categorizacion de variables numericas
+
+
+# Variable Age
+
+```{r categorizacion_age}
+# Categorizar la variable 'age' según los rangos definidos
+codified_dataset = cleaned_dataset
+codified_dataset = codified_dataset %>%
+  mutate(Age_Category = cut(Age,
+                            breaks = c(-Inf, 20, 50, Inf),
+                            labels = c("<20", "20-50", ">50"),
+                            right = FALSE))
+# Ver el resultado
+str(codified_dataset)
+# Mostrar la distribución de las categorías de edad
+table(codified_dataset$Age_Category)
+```
+
+# Variable Schooling
+
+```{r categorizacion_}
+
+# Categorizar la variable 'Schooling' según los rangos de escolaridad en México
+codified_dataset <- codified_dataset %>%
+  mutate(Education_Level = cut(Schooling,
+                               breaks = c(-Inf, 0, 6, 9, 12, 17, 25),
+                               labels = c("1", "2", "3", 
+                                          "4", "5", "6"),
+                               right = TRUE))
+
+# Ver el resultado
+str(codified_dataset)
+
+# Mostrar distribución de las categorías de escolaridad
+table(codified_dataset$Education_Level)
+```
+
+# Codificacion de variable Initial_Symptom
+
+```{r categorizacion_}
+
+codified_dataset$Initial_Symptom <- factor(codified_dataset$Initial_Symptom, levels = 1:15, 
+  labels = c("Visual", "Sensorial", "Motor", "Otro", "Visual y Sensorial", "Visual y Motor", 
+             "Visual y Otro", "Sensorial y Motor", "Sensorial y Otro", "Motor y Otro", 
+             "Visual, Sensorial y Motor", "Visual, Sensorial y Otro", "Visual, Motor y Otro", 
+             "Sensorial, Motor y Otro", "Visual, Sensorial, Motor y Otro"))
+
+# Realizamos el one-hot encoding
+codified_dataset <- codified_dataset %>%
+  mutate(ID = row_number()) %>%
+  separate_rows(Initial_Symptom, sep = ", ") %>%
+  separate_rows(Initial_Symptom, sep = " y ") %>%
+  mutate(value = TRUE) %>%
+  pivot_wider(names_from = Initial_Symptom, values_from = value, values_fill = list(value = FALSE)) %>%
+  select(-ID)
+
+# Ver el resultado
+str(codified_dataset)
+```
+
+```{r format}
+codified_dataset$Age = NULL
+codified_dataset$Schooling = NULL
+codified_dataset
+```
+
+
+```{r set_factor}
+factor_dataset = codified_dataset
+
+# Diccionarios de mapeo
+gender = c("1" = "Masculino", "2" = "Femenino")  # Suponiendo masculino como TRUE, femenino como FALSE
+breastfeeding = c("1" = "si", "2" = "no")  # NA para Desconocido
+varicella = c("1" = "positivo", "2" = "negativo") # NA para Desconocido
+mono_or_polysymptomatic = c("1" = "Monosintomatico", "2" = "Polisintomatico", "3" = "Desconocido")
+oligoclonal_bands = c("0" = "negativo", "1" = "positivo") # NA para Desconocido
+neg_pos = c("0" = "negativo", "1" = "positivo")
+group = c("1" = "EMCD", "2" = "No EMCD")  # EMCD como TRUE, No EMCD como FALSE
+neg_pos_vars = c("LLSSEP", "ULSSEP", "VEP", "BAEP", "Periventricular_MRI",
+                "Cortical_MRI", "Infratentorial_MRI", "Spinal_Cord_MRI")
+
+# Aplicación de mapeos
+factor_dataset$Gender = factor(factor_dataset$Gender, levels = names(gender), labels = gender)
+factor_dataset$Breastfeeding = factor(factor_dataset$Breastfeeding, levels = names(breastfeeding), labels = breastfeeding)
+factor_dataset$Varicella = factor(factor_dataset$Varicella, levels = names(varicella), labels = varicella)
+factor_dataset$Mono_or_Polysymptomatic = factor(factor_dataset$Mono_or_Polysymptomatic, levels = names(mono_or_polysymptomatic), labels = mono_or_polysymptomatic)
+factor_dataset$Oligoclonal_Bands = factor(factor_dataset$Oligoclonal_Bands, levels = names(oligoclonal_bands), labels = oligoclonal_bands)
+factor_dataset$group = factor(factor_dataset$group, levels = names(group), labels = group)
+
+for (var in neg_pos_vars) {
+  factor_dataset[[var]] = factor(factor_dataset[[var]], levels = names(neg_pos), labels = neg_pos)
+}
+
+
+factor_dataset$Breastfeeding = NULL
+
+
+# Llenar datos faltantes Monosintomatico
+factor_dataset$num_sintomas = rowSums(factor_dataset[, c("Sensorial", "Motor", "Otro", "Visual")], na.rm = TRUE)
+factor_dataset$Mono_or_Polysymptomatic[factor_dataset$Mono_or_Polysymptomatic == "Desconocido"] = ifelse(
+  factor_dataset$num_sintomas[factor_dataset$Mono_or_Polysymptomatic == "Desconocido"] > 1,
+  "Polisintomatico",  # Más de un síntoma inicial
+  "Monosintomatico"   # Un único síntoma inicial
+)
+factor_dataset$num_sintomas = NULL
+factor_dataset$Mono_or_Polysymptomatic = droplevels(factor_dataset$Mono_or_Polysymptomatic)
+
+# Pasar valores logical a factor
+logical_columns = sapply(factor_dataset, is.logical)
+factor_dataset[logical_columns] = lapply(factor_dataset[logical_columns], as.factor)
+
+# Llenar datos faltantes varicella y Oligoconal_Bands
+imputed_data = suppressWarnings(mice(factor_dataset, method = "pmm", m = 5, seed = 500,  printFlag = FALSE))
+completed_data = complete(imputed_data)
+
+
+
+na_count = summarise_all(completed_data, ~sum(is.na(.)))
+print(na_count)
+str(completed_data)
+completed_data
+```
+
+
+# Generacion de arboles de desicion
+
+## Modelo sin validacion cruzada
+
+```{r arboles_decision_modelo}
+set.seed(500)
+data_arboles = completed_data
+train_index = createDataPartition(data_arboles$group, p = 0.8, list = FALSE, times = 1) # para dividir datos teniendo en cuenta la cantidad con EMCD y sin
+train_data = data_arboles[train_index, ]
+test_data = data_arboles[-train_index, ]
+model = C5.0(group ~ ., data = train_data)
+```
+
+## Resultados
+
+### Arbol resultante
+
+```{r arboles_decision_resultados}
+png("decision_tree.png", width = 4000, height = 1800)
+plot(model, type = "simple", uniform = TRUE, branch = 1)
+dev.off()
+```
+
+### Resumen modelo
+
+```{r arboles_decision_resultados2}
+summary(model)
+```
+
+## Metricas de calidad
+
+```{r arboles_decision_resultados3}
+predictions = predict(model, test_data)
+confusion_matrix = confusionMatrix(predictions, test_data$group)
+print("General:")
+print(confusion_matrix$overall)
+print("Otros:")
+confusion_matrix$byClass
+print("Matriz de confusion")
+print(confusion_matrix)
+```
+
+
+## Modelo validacion cruzada
+
+```{r arboles_decision_modelo_vc}
+set.seed(500)
+data_arboles = completed_data
+train_index_vc = createDataPartition(data_arboles$group, p = 0.8, list = FALSE, times = 1) # para dividir datos teniendo en cuenta la cantidad con EMCD y sin
+train_data_vc = data_arboles[train_index_vc, ]
+test_data_vc = data_arboles[-train_index_vc, ]
+train_control = trainControl(method = "cv", number = 9)
+model_vc = train(group ~ ., data = train_data_vc, method = "C5.0", trControl = train_control)
+best_model = C5.0(group ~ ., data = train_data_vc, trials = model_vc$bestTune$trials, winnow = model_vc$bestTune$winnow)
+```
+
+## Resultados
+
+### Arbol resultante
+
+```{r arboles_decision_resultados_vc}
+png("decision_tree_vc.png", width = 4000, height = 1800)
+plot(best_model, type = "simple", uniform = TRUE, branch = 1)
+dev.off()
+```
+
+### Resumen modelo
+
+```{r arboles_decision_resultados2_vc}
+summary(best_model)
+```
+
+## Calculo de entropia, ganancia de informacion y razon de ganancia
+
+```{r arboles_decision_resultados5_vc}
+entropy <- function(data) {
+  prop <- prop.table(table(data))
+  if (all(prop == 0)) return(0)
+  -sum(prop * log2(prop))
+}
+
+information_gain <- function(data, feature, target) {
+  total_entropy <- entropy(data[[target]])
+  feature_values <- unique(data[[feature]])
+  weighted_entropy <- sum(sapply(feature_values, function(value) {
+    subset <- data[data[[feature]] == value, ]
+    (nrow(subset) / nrow(data)) * entropy(subset[[target]])
+  }))
+  total_entropy - weighted_entropy
+}
+
+# Función para calcular la razón de ganancia
+gain_ratio <- function(gain, split_info) {
+  if (is.na(split_info) || split_info == 0) {
+    return(0)
+  }
+  return(gain / split_info)
+}
+
+split_info <- function(data, feature) {
+  prop <- prop.table(table(data[[feature]]))
+  if (all(prop == 0)) return(0)
+  -sum(prop * log2(prop))
+}
+
+features <- setdiff(names(train_data_vc), "group")
+
+#node_metrics <- sapply(features, function(feature) {
+#  gain <- information_gain(train_data_vc, feature, "group")
+#  s_info <- split_info(train_data_vc, feature)
+#  gain_ratio_value <- gain_ratio(gain, s_info)
+#  c(Entropy = entropy(train_data_vc[[feature]]),
+#    Information_Gain = gain,
+#    Gain_Ratio = gain_ratio_value)
+#})
+node_metrics <- data.frame(Feature = character(), Entropy = numeric(), Information_Gain = numeric(), Gain_Ratio = numeric(), stringsAsFactors = FALSE)
+
+for(feature in features) {
+  gain <- information_gain(train_data_vc, feature, "group")
+  s_info <- split_info(train_data_vc, feature)
+  gain_ratio_value <- gain_ratio(gain, s_info)
+  node_metrics <- rbind(node_metrics, data.frame(Feature = feature, 
+                                                Entropy = entropy(train_data_vc[[feature]]),
+                                                Information_Gain = gain,
+                                                Gain_Ratio = gain_ratio_value))
+}
+
+node_metrics <- node_metrics %>% arrange(desc(Gain_Ratio))
+node_metrics
+```
+
+
+## Metricas de calidad
+
+```{r arboles_decision_resultados3_vc}
+predictions = predict(best_model, test_data_vc)
+confusion_matrix = confusionMatrix(predictions, test_data_vc$group)
+print("General:")
+print(confusion_matrix$overall)
+print("Otros:")
+confusion_matrix$byClass
+print("Matriz de confusion")
+print(confusion_matrix)
+```
